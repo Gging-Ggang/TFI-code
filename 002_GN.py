@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-from path_config import CLEAN_DATASET, DATA_ROOT, GAUSSIAN_DATASET
-
-
-INPUT_ROOT = DATA_ROOT / CLEAN_DATASET
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
+INPUT_ROOT = DATA_ROOT / "D_domainnet_clean"
 OUTPUT_SPECS = [
-    (GAUSSIAN_DATASET, 0.04),
+    ("D_domainnet_gaussian_linf_004", 0.04),
 ]
 
 BASE_SEED = 20260518

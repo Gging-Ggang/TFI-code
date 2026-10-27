@@ -7,13 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from path_config import (
-    CLEAN_DATASET,
-    GAUSSIAN_DATASET,
-    GAUSSIAN_LPIPS_DATASET,
-    NIGHTSHADE_DATASET,
-)
-
 try:
     from sklearn.metrics import average_precision_score, roc_auc_score
 except ImportError as exc:
@@ -26,6 +19,10 @@ except ImportError as exc:
 # Hardcoded configuration: identical screening protocol to 014
 # =========================================================
 PROJECT_ROOT = Path(__file__).resolve().parent
+CLEAN_DATASET = "D_domainnet_clean"
+NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
+GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
+GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 INPUT_ROOT = PROJECT_ROOT / "result" / "baseline"
 OUTPUT_ROOT = INPUT_ROOT / "screening"
 

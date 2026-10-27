@@ -2,13 +2,13 @@
 import os
 import shutil
 import random
+from pathlib import Path
 from PIL import Image
 
-from path_config import CLEAN_DATASET, DATA_ROOT
-
-
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 SRC_ROOT = DATA_ROOT / "DomainNet"
-DST_ROOT = DATA_ROOT / CLEAN_DATASET
+DST_ROOT = DATA_ROOT / "D_domainnet_clean"
 SAMPLES_PER_DOMAIN = 500
 SEED = 0
 OUT_SIZE = 512

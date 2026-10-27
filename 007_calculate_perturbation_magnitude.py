@@ -7,8 +7,6 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from path_config import RESULT_ROOT, resolve_stored_path
-
 try:
     import lpips
 except ImportError as exc:
@@ -20,6 +18,8 @@ except ImportError as exc:
     raise ImportError("Install scikit-image with: pip install scikit-image") from exc
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+RESULT_ROOT = PROJECT_ROOT / "result"
 FEATURE_METADATA = RESULT_ROOT / "features" / "feature_metadata.parquet"
 OUTPUT_ROOT = RESULT_ROOT / "perturbation"
 PER_IMAGE_CSV = OUTPUT_ROOT / "perturbation_per_image.csv"
@@ -34,6 +34,13 @@ ATTACKS = (
 )
 METRICS = ("linf", "l2", "l2_per_pixel", "l1_mean_abs", "psnr", "ssim", "lpips")
 KEY_COLUMNS = ["domain", "data_index", "poisoning", "poisoning_factor"]
+
+
+def resolve_stored_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 
 def configured_attack_mask(data: pd.DataFrame) -> np.ndarray:

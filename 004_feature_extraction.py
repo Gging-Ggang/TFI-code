@@ -13,18 +13,6 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from path_config import (
-    CLEAN_DATASET,
-    DATA_ROOT,
-    DOMAINNET_DATASETS,
-    GAUSSIAN_DATASET,
-    GAUSSIAN_LPIPS_DATASET,
-    NIGHTSHADE_DATASET,
-    RESULT_ROOT,
-    resolve_stored_path,
-    store_path,
-)
-
 try:
     import pyarrow  # noqa: F401
 except ImportError as exc:
@@ -33,10 +21,22 @@ except ImportError as exc:
     ) from exc
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
+RESULT_ROOT = PROJECT_ROOT / "result"
+CLEAN_DATASET = "D_domainnet_clean"
+NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
+GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
+GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 TRANSFORMATION_ROOT = DATA_ROOT / "Transformation"
 OUTPUT_ROOT = RESULT_ROOT / "features"
 
-DATASET_NAMES = DOMAINNET_DATASETS
+DATASET_NAMES = (
+    CLEAN_DATASET,
+    NIGHTSHADE_DATASET,
+    GAUSSIAN_DATASET,
+    GAUSSIAN_LPIPS_DATASET,
+)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)
@@ -49,6 +49,21 @@ BATCH_SIZE = 10
 OVERWRITE = False
 FEATURE_DTYPE = np.float16
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def store_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def resolve_stored_path(value: str | Path) -> Path:
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
 
 ENABLED_EXTRACTORS = (
     "sd_vae",

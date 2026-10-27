@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
@@ -10,11 +11,16 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from path_config import DATA_ROOT, DOMAINNET_DATASETS
-
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 OUTPUT_ROOT = DATA_ROOT / "Transformation"
 
-DATASET_NAMES = DOMAINNET_DATASETS
+DATASET_NAMES = (
+    "D_domainnet_clean",
+    "D_domainnet_nightshade_linf_004",
+    "D_domainnet_gaussian_linf_004",
+    "D_domainnet_gaussian_lpips_matched_ns_linf_004",
+)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)

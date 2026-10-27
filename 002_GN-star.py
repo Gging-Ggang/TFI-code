@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,26 +12,31 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from path_config import (
-    CLEAN_DATASET,
-    DATA_ROOT,
-    GAUSSIAN_LPIPS_DATASET,
-    NIGHTSHADE_DATASET,
-    RESULT_ROOT,
-    store_path,
-)
-
 try:
     import lpips
 except ImportError as exc:
     raise ImportError("Install LPIPS with: pip install lpips") from exc
 
 
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
+RESULT_ROOT = PROJECT_ROOT / "result"
+CLEAN_DATASET = "D_domainnet_clean"
+NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
+GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 PERTURBATION_CSV = RESULT_ROOT / "perturbation" / "perturbation_per_image.csv"
 DOMAINS = ("clipart", "infograph", "painting", "quickdraw", "real", "sketch")
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 INDEX_RE = re.compile(r"(?P<index>\d{4})$")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def store_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(PROJECT_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 @dataclass(frozen=True)

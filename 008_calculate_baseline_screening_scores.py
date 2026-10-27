@@ -11,15 +11,6 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from path_config import (
-    CLEAN_DATASET,
-    DATA_ROOT,
-    GAUSSIAN_DATASET,
-    GAUSSIAN_LPIPS_DATASET,
-    NIGHTSHADE_DATASET,
-    RESULT_ROOT,
-)
-
 try:
     import lpips
 except ImportError as exc:
@@ -29,6 +20,13 @@ except ImportError as exc:
 # =========================================================
 # Hardcoded configuration
 # =========================================================
+PROJECT_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
+RESULT_ROOT = PROJECT_ROOT / "result"
+CLEAN_DATASET = "D_domainnet_clean"
+NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
+GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
+GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 TRANSFORMATION_ROOT = DATA_ROOT / "Transformation"
 TFI_ROOT = RESULT_ROOT / "tfi"
 OUTPUT_ROOT = RESULT_ROOT / "baseline"

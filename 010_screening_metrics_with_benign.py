@@ -12,8 +12,6 @@ from types import ModuleType
 import numpy as np
 import pandas as pd
 
-from path_config import CLEAN_DATASET
-
 try:
     from sklearn.metrics import average_precision_score, roc_auc_score
 except ImportError as exc:
@@ -24,6 +22,7 @@ except ImportError as exc:
 # Hardcoded configuration
 # =========================================================
 ROOT = Path(__file__).resolve().parent
+CLEAN_DATASET = "D_domainnet_clean"
 TFI_ROOT = ROOT / "result" / "tfi"
 SCREENING_ROOT = ROOT / "result" / "screening"
 
