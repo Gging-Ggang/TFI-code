@@ -1,0 +1,15 @@
+Nightshade Code Notice
+
+The files in this directory are adapted from the official Nightshade
+research code release:
+
+https://github.com/Shawn-Shan/nightshade-release
+
+The upstream Nightshade code is licensed under GPL-3.0; see LICENSE in
+this directory.
+
+Modifications for this supplementary package, July 2026:
+- PNG folder input and PNG output support.
+- Deterministic input ordering for folder processing.
+- Command-line perturbation settings.
+- Zero-padded output numbering for generated images.
