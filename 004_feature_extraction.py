@@ -13,6 +13,10 @@ import pandas as pd
 import torch
 from PIL import Image
 
+from paper_config import (
+    AUXILIARY_DOMAINS, DATASET_NAMES, DATASET_POISONING, DOMAINNET_DATASETS,
+)
+
 try:
     import pyarrow  # noqa: F401
 except ImportError as exc:
@@ -30,13 +34,6 @@ GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
 GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 TRANSFORMATION_ROOT = DATA_ROOT / "Transformation"
 OUTPUT_ROOT = RESULT_ROOT / "features"
-
-DATASET_NAMES = (
-    CLEAN_DATASET,
-    NIGHTSHADE_DATASET,
-    GAUSSIAN_DATASET,
-    GAUSSIAN_LPIPS_DATASET,
-)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)
@@ -157,7 +154,7 @@ def dataset_locations() -> list[DatasetLocation]:
         )
 
     for factor in DOWNSCALE_FACTORS:
-        for dataset_name in DATASET_NAMES:
+        for dataset_name in DOMAINNET_DATASETS:
             locations.append(
                 DatasetLocation(
                     root=(
@@ -173,7 +170,7 @@ def dataset_locations() -> list[DatasetLocation]:
             )
 
     for sigma in GAUSSIAN_SIGMAS:
-        for dataset_name in DATASET_NAMES:
+        for dataset_name in DOMAINNET_DATASETS:
             locations.append(
                 DatasetLocation(
                     root=(
@@ -190,6 +187,8 @@ def dataset_locations() -> list[DatasetLocation]:
 
     for quality in JPEG_QUALITIES:
         for dataset_name in DATASET_NAMES:
+            if dataset_name in AUXILIARY_DOMAINS and quality != 85:
+                continue
             locations.append(
                 DatasetLocation(
                     root=(
@@ -213,15 +212,9 @@ def dataset_locations() -> list[DatasetLocation]:
 
 
 def parse_poisoning(dataset_name: str) -> tuple[str, str]:
-    mapping = {
-        CLEAN_DATASET: ("none", "none"),
-        NIGHTSHADE_DATASET: ("NS_linf", "0.04"),
-        GAUSSIAN_DATASET: ("GN_linf", "0.04"),
-        GAUSSIAN_LPIPS_DATASET: ("GN_star_linf", "0.04"),
-    }
-    if dataset_name not in mapping:
+    if dataset_name not in DATASET_POISONING:
         raise ValueError(f"Unknown dataset name: {dataset_name}")
-    return mapping[dataset_name]
+    return DATASET_POISONING[dataset_name]
 
 
 def infer_domain_from_filename(image_path: Path) -> str:
@@ -240,6 +233,11 @@ def infer_data_index(image_path: Path) -> str:
 
 
 def iter_location_images(location: DatasetLocation):
+    if location.dataset_name in AUXILIARY_DOMAINS:
+        for image_path in sorted(location.root.rglob("*")):
+            if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTS:
+                yield AUXILIARY_DOMAINS[location.dataset_name], image_path
+        return
     domain_directories = sorted(path for path in location.root.iterdir() if path.is_dir())
 
     if domain_directories:
@@ -269,7 +267,7 @@ def discover_images(locations: list[DatasetLocation]) -> list[dict]:
         location_count = 0
 
         for domain, image_path in iter_location_images(location):
-            if domain not in KNOWN_DOMAINS:
+            if domain not in (*KNOWN_DOMAINS, *set(AUXILIARY_DOMAINS.values())):
                 raise ValueError(f"Unknown domain '{domain}' for {image_path}")
 
             data_index = infer_data_index(image_path)

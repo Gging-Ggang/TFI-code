@@ -11,6 +11,8 @@ import pandas as pd
 import torch
 from PIL import Image
 
+from paper_config import DATASET_POISONING, DOMAINNET_DATASETS
+
 try:
     import lpips
 except ImportError as exc:
@@ -62,16 +64,9 @@ class TransformationSpec:
     directory: Path
 
 
-DATASETS = (
-    DatasetSpec(CLEAN_DATASET, "domainnet", "none", "none"),
-    DatasetSpec(NIGHTSHADE_DATASET, "domainnet", "NS_linf", "0.04"),
-    DatasetSpec(GAUSSIAN_DATASET, "domainnet", "GN_linf", "0.04"),
-    DatasetSpec(
-        GAUSSIAN_LPIPS_DATASET,
-        "domainnet",
-        "GN_star_linf",
-        "0.04",
-    ),
+DATASETS = tuple(
+    DatasetSpec(name, "domainnet", *DATASET_POISONING[name])
+    for name in DOMAINNET_DATASETS
 )
 
 TRANSFORMATIONS = (
@@ -91,6 +86,14 @@ TRANSFORMATIONS = (
         TransformationSpec("jpeg_comp", quality, Path("jpeg_comp") / f"quality_{quality}")
         for quality in ("95", "85", "75", "50")
     ),
+)
+
+
+# The 005 array retains all 14 transformations; Table 3 uses JPEG Q85 only.
+TFI_TRANSFORMATIONS = TRANSFORMATIONS
+TRANSFORMATIONS = tuple(
+    item for item in TFI_TRANSFORMATIONS
+    if item.transformation == "jpeg_comp" and item.transformation_factor == "85"
 )
 
 
@@ -292,7 +295,7 @@ def load_tfi_sources() -> tuple[pd.DataFrame, np.ndarray]:
         dtype={column: "string" for column in required},
     )
     metrics = np.load(metric_path, mmap_mode="r", allow_pickle=False)
-    expected_metric_columns = len(TRANSFORMATIONS) * 2
+    expected_metric_columns = len(TFI_TRANSFORMATIONS) * 2
     if metrics.shape != (len(metadata), expected_metric_columns):
         raise ValueError(
             "005 TFI metadata/array mismatch: "
@@ -342,7 +345,7 @@ def tfi_scores(
             f"{dataset.dataset_name}: {list(missing[:5])}"
         )
     metric_rows = subset.loc[key_index, "metric_row"].to_numpy(dtype=np.int64)
-    transformation_index = TRANSFORMATIONS.index(transformation)
+    transformation_index = TFI_TRANSFORMATIONS.index(transformation)
     return np.asarray(
         metrics[metric_rows, transformation_index],
         dtype=np.float32,

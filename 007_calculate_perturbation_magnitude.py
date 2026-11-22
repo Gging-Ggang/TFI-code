@@ -7,6 +7,8 @@ import pandas as pd
 import torch
 from PIL import Image
 
+from paper_config import DATASET_POISONING, exclude_black_sources
+
 try:
     import lpips
 except ImportError as exc:
@@ -27,11 +29,9 @@ SUMMARY_CSV = OUTPUT_ROOT / "perturbation_summary.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1024
 
-ATTACKS = (
-    ("GN_linf", "0.04"),
-    ("NS_linf", "0.04"),
-    ("GN_star_linf", "0.04"),
-)
+ATTACKS = tuple(dict.fromkeys(
+    value for value in DATASET_POISONING.values() if value[0] != "none"
+))
 METRICS = ("linf", "l2", "l2_per_pixel", "l1_mean_abs", "psnr", "ssim", "lpips")
 KEY_COLUMNS = ["domain", "data_index", "poisoning", "poisoning_factor"]
 
@@ -65,7 +65,9 @@ def load_pairs() -> pd.DataFrame:
         raise ValueError(f"Missing feature metadata columns: {missing}")
     for column in required:
         metadata[column] = metadata[column].astype(str)
-    original = metadata.loc[metadata["transformation"].eq("original")].copy()
+    original = exclude_black_sources(
+        metadata.loc[metadata["transformation"].eq("original")]
+    )
     clean = original.loc[
         original["poisoning"].eq("none") & original["poisoning_factor"].eq("none"),
         ["domain", "data_index", "image_path"],

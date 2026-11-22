@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from paper_config import AUXILIARY_DOMAINS
+
 
 # =========================================================
 # Hardcoded configuration
@@ -166,7 +168,13 @@ def transformation_row_indices(
 
         selected = selected.set_index(IDENTITY_COLUMNS)
         selected_keys = selected.index
-        missing_keys = original_keys.difference(selected_keys)
+        # Auxiliary methods are evaluated only under JPEG Q85. Unmeasured
+        # auxiliary cells remain NaN; missing DomainNet measurements are errors.
+        optional = originals["dataset_name"].isin(AUXILIARY_DOMAINS).to_numpy()
+        if transformation == "jpeg_comp" and factor == "85":
+            optional[:] = False
+        required_keys = original_keys[~optional]
+        missing_keys = required_keys.difference(selected_keys)
         extra_keys = selected_keys.difference(original_keys)
         if len(missing_keys) or (require_exact and len(extra_keys)):
             raise ValueError(
@@ -174,10 +182,9 @@ def transformation_row_indices(
                 f"{len(missing_keys)} missing and {len(extra_keys)} extra rows"
             )
 
-        indices_by_column[output_column] = selected.loc[
-            original_keys,
-            "row_id",
-        ].to_numpy(dtype=np.int64)
+        indices_by_column[output_column] = selected.reindex(
+            original_keys
+        )["row_id"].fillna(-1).to_numpy(dtype=np.int64)
 
     return indices_by_column
 
@@ -247,23 +254,25 @@ def calculate_metrics(
     transformed_indices: dict[str, np.ndarray],
     extractor_name: str,
 ) -> tuple[np.ndarray, np.ndarray]:
-    distances = np.empty(
+    distances = np.full(
         (len(original_indices), len(TRANSFORMATIONS)),
+        np.nan,
         dtype=np.float32,
     )
-    angles = np.empty_like(distances)
+    angles = np.full_like(distances, np.nan)
 
     for column_index, (_, _, output_column) in enumerate(TRANSFORMATIONS):
         target_indices = transformed_indices[output_column]
 
-        for start in range(0, len(original_indices), BATCH_SIZE):
-            end = min(start + BATCH_SIZE, len(original_indices))
+        positions = np.flatnonzero(target_indices >= 0)
+        for start in range(0, len(positions), BATCH_SIZE):
+            selected_positions = positions[start:start + BATCH_SIZE]
             original_batch = np.asarray(
-                features[original_indices[start:end]],
+                features[original_indices[selected_positions]],
                 dtype=np.float32,
             )
             transformed_batch = np.asarray(
-                features[target_indices[start:end]],
+                features[target_indices[selected_positions]],
                 dtype=np.float32,
             )
             difference = original_batch - transformed_batch
@@ -274,7 +283,7 @@ def calculate_metrics(
                 dtype=np.float32,
                 optimize=True,
             )
-            distances[start:end, column_index] = np.sqrt(squared_distance)
+            distances[selected_positions, column_index] = np.sqrt(squared_distance)
 
             original_squared_norm = np.einsum(
                 "ij,ij->i",
@@ -310,7 +319,7 @@ def calculate_metrics(
                 original_squared_norm * transformed_squared_norm
             )
             cosine_similarity = np.clip(dot_product / denominator, -1.0, 1.0)
-            angles[start:end, column_index] = np.degrees(
+            angles[selected_positions, column_index] = np.degrees(
                 np.arccos(cosine_similarity)
             )
 
@@ -319,9 +328,16 @@ def calculate_metrics(
             f"{output_column}"
         )
 
-    if not np.all(np.isfinite(distances)):
+    unmeasured = np.column_stack([
+        transformed_indices[column] < 0 for _, _, column in TRANSFORMATIONS
+    ])
+    if not np.array_equal(np.isnan(distances), unmeasured) or not np.all(
+        np.isfinite(distances[~unmeasured])
+    ):
         raise ValueError(f"Non-finite latent distances found for {extractor_name}")
-    if not np.all(np.isfinite(angles)):
+    if not np.array_equal(np.isnan(angles), unmeasured) or not np.all(
+        np.isfinite(angles[~unmeasured])
+    ):
         raise ValueError(f"Non-finite latent angles found for {extractor_name}")
 
     return distances, angles

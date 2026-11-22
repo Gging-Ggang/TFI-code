@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import argparse
 import json
 import os
 import sys
@@ -11,6 +12,8 @@ from types import ModuleType
 
 import numpy as np
 import pandas as pd
+
+from paper_config import assert_cohort, domainnet_sources
 
 try:
     from sklearn.metrics import average_precision_score, roc_auc_score
@@ -73,7 +76,7 @@ DOMAINNET_DOMAINS = (
     "quickdraw",
 )
 EXPECTED_DOMAIN_COUNTS = {
-    domain: 10
+    domain: 495 if domain == "clipart" else 500
     for domain in DOMAINNET_DOMAINS
 }
 EXPECTED_POOL_SIZE = sum(EXPECTED_DOMAIN_COUNTS.values())
@@ -132,10 +135,11 @@ BENIGN_COLUMNS = [
 
 
 def exclude_identities(data: pd.DataFrame) -> pd.DataFrame:
-    return data.copy()
+    return domainnet_sources(data)
 
 
 def validate_domainnet_pool(data: pd.DataFrame, name: str) -> None:
+    assert_cohort(data, name)
     counts = data.groupby("domain", observed=True).size()
     expected = pd.Series(
         EXPECTED_DOMAIN_COUNTS,
@@ -954,6 +958,21 @@ def save_summary(raw: pd.DataFrame, path: Path) -> None:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Benign-processing TFI measurements")
+    parser.add_argument(
+        "--measurements-only", action="store_true",
+        help="Write the 14 benign-history TFI measurements without mixture screening.",
+    )
+    parser.add_argument(
+        "--legacy-screening", action="store_true",
+        help="Run the historical mixture-screening workflow, not the current paper analysis.",
+    )
+    args = parser.parse_args()
+    if args.measurements_only and args.legacy_screening:
+        parser.error("--measurements-only and --legacy-screening are mutually exclusive.")
+    if not args.legacy_screening:
+        ensure_benign_tfi()
+        return
     SCREENING_ROOT.mkdir(parents=True, exist_ok=True)
     base_scores = load_base_scores()
     benign_scores = load_benign_scores()

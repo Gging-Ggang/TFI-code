@@ -11,16 +11,11 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
+from paper_config import AUXILIARY_DOMAINS, DATASET_NAMES
+
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 OUTPUT_ROOT = DATA_ROOT / "Transformation"
-
-DATASET_NAMES = (
-    "D_domainnet_clean",
-    "D_domainnet_nightshade_linf_004",
-    "D_domainnet_gaussian_linf_004",
-    "D_domainnet_gaussian_lpips_matched_ns_linf_004",
-)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)
@@ -191,6 +186,8 @@ def save_jpeg_variants(
     jobs = []
     for array, source_path in zip(arrays, source_paths):
         for quality in JPEG_QUALITIES:
+            if dataset_root.name in AUXILIARY_DOMAINS and quality != 85:
+                continue
             transformation_directory = (
                 OUTPUT_ROOT / "jpeg_comp" / f"quality_{quality}"
             )
@@ -214,6 +211,10 @@ def save_jpeg_variants(
 
 
 def expected_output_paths(dataset_root: Path, source_path: Path) -> list[Path]:
+    if dataset_root.name in AUXILIARY_DOMAINS:
+        return [output_path(
+            OUTPUT_ROOT / "jpeg_comp" / "quality_85", dataset_root, source_path,
+        )]
     paths: list[Path] = []
     for factor in DOWNSCALE_FACTORS:
         paths.append(
@@ -270,7 +271,7 @@ def process_dataset(dataset_root: Path, executor: ThreadPoolExecutor) -> int:
     for source_paths in batched(paths_to_process, BATCH_SIZE):
         batch_uint8, batch = load_batch(source_paths)
 
-        for factor in DOWNSCALE_FACTORS:
+        for factor in (() if dataset_root.name in AUXILIARY_DOMAINS else DOWNSCALE_FACTORS):
             transformed = downscale_upscale(batch, factor)
             arrays = tensor_to_uint8_arrays(transformed)
             transformation_directory = (
@@ -285,7 +286,7 @@ def process_dataset(dataset_root: Path, executor: ThreadPoolExecutor) -> int:
             )
             del transformed, arrays
 
-        for sigma in GAUSSIAN_SIGMAS:
+        for sigma in (() if dataset_root.name in AUXILIARY_DOMAINS else GAUSSIAN_SIGMAS):
             transformed = gaussian_blur(batch, sigma)
             arrays = tensor_to_uint8_arrays(transformed)
             transformation_directory = (

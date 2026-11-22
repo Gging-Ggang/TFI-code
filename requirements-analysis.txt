@@ -1,0 +1,5 @@
+# CPU-only analysis of existing measurements; no model downloads.
+numpy==2.2.6
+pandas==2.3.3
+scipy==1.15.3
+pyarrow==24.0.0
