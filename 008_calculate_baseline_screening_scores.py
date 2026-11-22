@@ -11,8 +11,6 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from paper_config import DATASET_POISONING, DOMAINNET_DATASETS
-
 try:
     import lpips
 except ImportError as exc:
@@ -25,10 +23,6 @@ except ImportError as exc:
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 RESULT_ROOT = PROJECT_ROOT / "result"
-CLEAN_DATASET = "D_domainnet_clean"
-NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
-GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
-GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 TRANSFORMATION_ROOT = DATA_ROOT / "Transformation"
 TFI_ROOT = RESULT_ROOT / "tfi"
 OUTPUT_ROOT = RESULT_ROOT / "baseline"
@@ -65,8 +59,15 @@ class TransformationSpec:
 
 
 DATASETS = tuple(
-    DatasetSpec(name, "domainnet", *DATASET_POISONING[name])
-    for name in DOMAINNET_DATASETS
+    [DatasetSpec("D_domainnet_clean", "domainnet", "none", "none")]
+    + [
+        DatasetSpec(f"{prefix}_{tag}", "domainnet", poisoning, strength)
+        for tag, strength in (("002", "0.02"), ("004", "0.04"))
+        for prefix, poisoning in (
+            ("D_domainnet_nightshade_linf", "NS_linf"),
+            ("D_domainnet_gaussian_lpips_matched_ns_linf", "GN_star_linf"),
+        )
+    ]
 )
 
 TRANSFORMATIONS = (
@@ -295,11 +296,12 @@ def load_tfi_sources() -> tuple[pd.DataFrame, np.ndarray]:
         dtype={column: "string" for column in required},
     )
     metrics = np.load(metric_path, mmap_mode="r", allow_pickle=False)
-    expected_metric_columns = len(TFI_TRANSFORMATIONS) * 2
-    if metrics.shape != (len(metadata), expected_metric_columns):
+    expected_metric_columns = len(TFI_TRANSFORMATIONS)
+    if metrics.shape[0] != len(metadata) or metrics.shape[1] < expected_metric_columns:
         raise ValueError(
             "005 TFI metadata/array mismatch: "
-            f"{metrics.shape} != {(len(metadata), expected_metric_columns)}"
+            f"{metrics.shape}; expected {len(metadata)} rows and at least "
+            f"{expected_metric_columns} TFI columns"
         )
     metadata.insert(0, "metric_row", np.arange(len(metadata), dtype=np.int64))
     metadata = metadata.loc[

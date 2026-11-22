@@ -7,33 +7,37 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from paper_config import DATASET_POISONING, exclude_black_sources
-
 try:
     import lpips
 except ImportError as exc:
     raise ImportError("Install LPIPS with: pip install lpips") from exc
-
-try:
-    from skimage.metrics import structural_similarity
-except ImportError as exc:
-    raise ImportError("Install scikit-image with: pip install scikit-image") from exc
-
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 RESULT_ROOT = PROJECT_ROOT / "result"
 FEATURE_METADATA = RESULT_ROOT / "features" / "feature_metadata.parquet"
 OUTPUT_ROOT = RESULT_ROOT / "perturbation"
 PER_IMAGE_CSV = OUTPUT_ROOT / "perturbation_per_image.csv"
-SUMMARY_CSV = OUTPUT_ROOT / "perturbation_summary.csv"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 BATCH_SIZE = 1024
 
-ATTACKS = tuple(dict.fromkeys(
-    value for value in DATASET_POISONING.values() if value[0] != "none"
-))
-METRICS = ("linf", "l2", "l2_per_pixel", "l1_mean_abs", "psnr", "ssim", "lpips")
+ATTACKS = (
+    *((poisoning, strength)
+      for strength in ("0.02", "0.04")
+      for poisoning in ("NS_linf", "GN_linf", "GN_star_linf")),
+    ("Glaze", "none"), ("Honig_MIST", "none"),
+    ("AntiDB", "none"), ("MetaCloak", "none"),
+)
+EXCLUDED_CLIPART = {14, 32, 79, 123, 465}
+METRICS = ("linf", "lpips")
 KEY_COLUMNS = ["domain", "data_index", "poisoning", "poisoning_factor"]
+
+
+def exclude_black_sources(data: pd.DataFrame) -> pd.DataFrame:
+    result = data.copy()
+    indices = pd.to_numeric(result["data_index"])
+    result["data_index"] = indices.map(lambda value: f"{int(value):04d}")
+    excluded = result["domain"].eq("clipart") & indices.isin(EXCLUDED_CLIPART)
+    return result.loc[~excluded].copy()
 
 
 def resolve_stored_path(value: str | Path) -> Path:
@@ -115,16 +119,7 @@ def pixel_metrics(clean: np.ndarray, poison: np.ndarray) -> dict[str, float]:
         raise ValueError(f"Image shape mismatch: {clean.shape} != {poison.shape}")
     difference = poison - clean
     absolute = np.abs(difference)
-    squared = np.square(difference, dtype=np.float64)
-    mse = float(np.mean(squared))
-    return {
-        "linf": float(np.max(absolute)),
-        "l2": float(np.sqrt(np.sum(squared))),
-        "l2_per_pixel": float(np.sqrt(mse)),
-        "l1_mean_abs": float(np.mean(absolute)),
-        "psnr": float("inf") if mse == 0 else float(10.0 * np.log10(1.0 / mse)),
-        "ssim": float(structural_similarity(clean, poison, channel_axis=2, data_range=1.0)),
-    }
+    return {"linf": float(np.max(absolute))}
 
 
 def lpips_tensor(images: list[np.ndarray]) -> torch.Tensor:
@@ -161,30 +156,9 @@ def calculate_per_image(pairs: pd.DataFrame) -> pd.DataFrame:
         if end % 500 < BATCH_SIZE or end == len(pairs):
             print(f"Processed: {end}/{len(pairs)}")
     result = pd.DataFrame(rows)
-    if not np.all(np.isfinite(result[[metric for metric in METRICS if metric != "psnr"]])):
+    if not np.all(np.isfinite(result[list(METRICS)])):
         raise ValueError("Non-finite perturbation metrics were found")
     return result
-
-
-def summarize(per_image: pd.DataFrame) -> pd.DataFrame:
-    pooled = per_image.assign(domain_scope="pooled")
-    by_domain = per_image.assign(domain_scope=per_image["domain"])
-    combined = pd.concat([pooled, by_domain], ignore_index=True)
-    rows: list[dict] = []
-    for keys, group in combined.groupby(
-        ["poisoning", "poisoning_factor", "domain_scope"], sort=False
-    ):
-        row = dict(zip(["poisoning", "poisoning_factor", "domain_scope"], keys))
-        row["n"] = len(group)
-        for metric in METRICS:
-            values = group[metric].to_numpy(dtype=float)
-            row[f"{metric}_mean"] = float(np.mean(values))
-            row[f"{metric}_median"] = float(np.median(values))
-            row[f"{metric}_std"] = float(np.std(values, ddof=1)) if len(values) > 1 else 0.0
-            row[f"{metric}_q90"] = float(np.quantile(values, 0.90))
-            row[f"{metric}_q95"] = float(np.quantile(values, 0.95))
-        rows.append(row)
-    return pd.DataFrame(rows)
 
 
 def main() -> None:
@@ -194,8 +168,10 @@ def main() -> None:
     if PER_IMAGE_CSV.is_file():
         existing = pd.read_csv(
             PER_IMAGE_CSV,
+            usecols=[*KEY_COLUMNS, *METRICS],
             dtype={column: "string" for column in KEY_COLUMNS},
         )
+        existing = exclude_black_sources(existing)
         configured = configured_attack_mask(existing)
         removed_count = int((~configured).sum())
         existing = existing.loc[configured].reset_index(drop=True)
@@ -225,10 +201,7 @@ def main() -> None:
         per_image = new_per_image
     per_image.to_csv(PER_IMAGE_CSV, index=False, float_format="%.10g")
 
-    summary = summarize(per_image)
-    summary.to_csv(SUMMARY_CSV, index=False, float_format="%.10g")
     print(f"Saved: {PER_IMAGE_CSV}")
-    print(f"Saved: {SUMMARY_CSV}")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Source-paired A, C and gamma at both strengths, without mixture screening."""
+"""Calculate source-paired feature responses at both perturbation strengths."""
 from __future__ import annotations
 
 import argparse
@@ -7,18 +7,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from paper_config import (
-    CONDITION_NAMES, FEATURE_EXTRACTORS, IDENTITY_COLUMNS,
-    STRENGTHS, TRANSFORMATIONS, assert_cohort, domainnet_sources, score_column,
-)
-
 
 # =========================================================
 # Hardcoded configuration
 # =========================================================
 PROJECT_ROOT = Path(__file__).resolve().parent
 FEATURE_ROOT = PROJECT_ROOT / "result" / "features"
-TFI_CSV = PROJECT_ROOT / "result" / "tfi" / "tfi.csv"
 OUTPUT_CSV = PROJECT_ROOT / "result" / "analysis" / "012_decomposition_per_sample.csv"
 FEATURE_DIMS = {
     "sd_vae": 16384, "resnet50": 2048, "convnext_tiny": 768,
@@ -26,6 +20,24 @@ FEATURE_DIMS = {
 }
 BATCH_SIZE = 256
 EPS = 1e-12
+FEATURE_EXTRACTORS = tuple(FEATURE_DIMS)
+IDENTITY_COLUMNS = ["domain", "data_index"]
+DOMAINS = ("clipart", "infograph", "painting", "quickdraw", "real", "sketch")
+EXCLUDED_CLIPART = {14, 32, 79, 123, 465}
+STRENGTHS = (0.02, 0.04)
+TRANSFORMATIONS = (
+    *(("jpeg_comp", value) for value in (95, 85, 75, 50)),
+    *(("gaussian_blur", value) for value in (0.5, 1.0, 2.0, 3.0)),
+    *(("downscaling", value) for value in (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)),
+)
+
+
+def domainnet_sources(data: pd.DataFrame) -> pd.DataFrame:
+    result = data.loc[data["domain"].isin(DOMAINS)].copy()
+    indices = pd.to_numeric(result["data_index"])
+    result["data_index"] = indices.map(lambda value: f"{int(value):04d}")
+    excluded = result["domain"].eq("clipart") & indices.isin(EXCLUDED_CLIPART)
+    return result.loc[~excluded].copy()
 
 
 def factor_mask(values: pd.Series, factor: str | float) -> pd.Series:
@@ -68,7 +80,8 @@ def indexed_rows(
         & factor_mask(metadata["transformation_factor"], factor)
     )
     selected = domainnet_sources(metadata.loc[mask, [*IDENTITY_COLUMNS, "row_id"]])
-    assert_cohort(selected, f"{poisoning}/{strength}/{transformation}/{factor}")
+    if len(selected) != 2995 or selected.duplicated(IDENTITY_COLUMNS).any():
+        raise ValueError(f"Incomplete feature rows: {poisoning}/{strength}/{transformation}/{factor}")
     return selected.sort_values(IDENTITY_COLUMNS, kind="stable").reset_index(drop=True)
 
 
@@ -123,28 +136,11 @@ def response_values(
         "clean_s2": clean_tfi.astype(np.float64) ** 2,
         "modified_s2": modified_tfi.astype(np.float64) ** 2,
         "A": magnitude, "C": 2.0 * dot, "gamma": gamma,
-        "identity_residual": modified_squared - (clean_squared + magnitude + 2.0 * dot),
     }
 
 
-def existing_scores(
-    tfi: pd.DataFrame, extractor: str, poisoning: str, strength: str | float,
-    transformation: str, factor: float,
-) -> np.ndarray:
-    selected = tfi.loc[
-        tfi["feature_extractor"].eq(extractor)
-        & tfi["poisoning"].eq(poisoning)
-        & factor_mask(tfi["poisoning_factor"], strength)
-    ]
-    selected = domainnet_sources(selected)
-    assert_cohort(selected, f"005 TFI {extractor}/{poisoning}/{strength}")
-    return selected.sort_values(IDENTITY_COLUMNS, kind="stable")[
-        score_column(transformation, factor)
-    ].to_numpy(dtype=np.float64)
-
-
 def calculate(
-    metadata: pd.DataFrame, tfi: pd.DataFrame, feature_root: Path, output_csv: Path,
+    metadata: pd.DataFrame, feature_root: Path, output_csv: Path,
 ) -> None:
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_csv.with_suffix(".tmp.csv")
@@ -162,12 +158,6 @@ def calculate(
                         pairs = paired_rows(
                             metadata, poisoning, strength, transformation, factor,
                         )
-                        clean_existing = existing_scores(
-                            tfi, extractor, "none", "none", transformation, factor,
-                        )
-                        modified_existing = existing_scores(
-                            tfi, extractor, poisoning, strength, transformation, factor,
-                        )
                         for start in range(0, len(pairs), BATCH_SIZE):
                             end = min(start + BATCH_SIZE, len(pairs))
                             rows = pairs.iloc[start:end]
@@ -184,26 +174,16 @@ def calculate(
                                     f"Undefined response values: {extractor}/{strength}/"
                                     f"{poisoning}/{transformation}/{factor}"
                                 )
-                            for name, observed in (
-                                ("clean_tfi", clean_existing[start:end]),
-                                ("modified_tfi", modified_existing[start:end]),
-                            ):
-                                if not np.allclose(values[name], observed, rtol=5e-5, atol=5e-5):
-                                    raise ValueError("Feature responses disagree with 005 TFI scores.")
                             frame = rows[IDENTITY_COLUMNS].copy()
                             frame["strength"] = strength
                             frame["feature_extractor"] = extractor
                             frame["transformation"] = transformation
                             frame["transformation_factor"] = float(factor)
-                            frame["modification"] = CONDITION_NAMES[poisoning]
+                            frame["modification"] = (
+                                "NS" if poisoning == "NS_linf" else "GNstar"
+                            )
                             for name, value in values.items():
                                 frame[name] = value
-                            frame["clean_tfi_abs_error"] = np.abs(
-                                values["clean_tfi"] - clean_existing[start:end]
-                            )
-                            frame["modified_tfi_abs_error"] = np.abs(
-                                values["modified_tfi"] - modified_existing[start:end]
-                            )
                             frame.to_csv(
                                 temporary, mode="w" if header else "a", header=header,
                                 index=False, float_format="%.12g",
@@ -226,23 +206,10 @@ def calculate(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--feature-root", type=Path, default=FEATURE_ROOT)
-    parser.add_argument("--tfi-csv", type=Path, default=TFI_CSV)
     parser.add_argument("--output-csv", type=Path, default=OUTPUT_CSV)
     args = parser.parse_args()
     metadata = load_metadata(args.feature_root)
-    columns = [
-        *IDENTITY_COLUMNS, "feature_extractor", "poisoning", "poisoning_factor",
-        *(score_column(name, value) for name, value in TRANSFORMATIONS),
-    ]
-    tfi = pd.read_csv(
-        args.tfi_csv, usecols=columns,
-        dtype={name: str for name in columns[:5]}, keep_default_na=False,
-        float_precision="round_trip",
-    )
-    tfi["poisoning"] = tfi["poisoning"].replace(
-        {"GN_lpips_matched_ns_linf": "GN_star_linf"}
-    )
-    calculate(metadata, tfi, args.feature_root, args.output_csv)
+    calculate(metadata, args.feature_root, args.output_csv)
 
 
 if __name__ == "__main__":

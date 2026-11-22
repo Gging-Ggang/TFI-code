@@ -11,11 +11,22 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from paper_config import AUXILIARY_DOMAINS, DATASET_NAMES
-
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 OUTPUT_ROOT = DATA_ROOT / "Transformation"
+
+DOMAINNET_DATASETS = (
+    "D_domainnet_clean",
+    "D_domainnet_nightshade_linf_002", "D_domainnet_nightshade_linf_004",
+    "D_domainnet_gaussian_linf_002", "D_domainnet_gaussian_linf_004",
+    "D_domainnet_gaussian_lpips_matched_ns_linf_002",
+    "D_domainnet_gaussian_lpips_matched_ns_linf_004",
+)
+AUXILIARY_DOMAINS = (
+    "D_Honig_original", "D_Honig_glaze", "D_Honig_mist", "D_Honig_antidb",
+    "D_metacloak_clean", "D_metacloak_protected",
+)
+DATASET_NAMES = (*DOMAINNET_DATASETS, *AUXILIARY_DOMAINS)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)

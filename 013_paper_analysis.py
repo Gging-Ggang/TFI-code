@@ -2,20 +2,11 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import ks_2samp, rankdata, spearmanr
-
-from paper_config import (
-    AUXILIARY_METHODS, CONDITION_NAMES, DOMAINS, FEATURE_EXTRACTORS,
-    IDENTITY_COLUMNS, N_SOURCES, PROBE_COLUMNS, STRENGTHS, TRANSFORMATIONS,
-    assert_cohort, domainnet_sources, exclude_black_sources,
-    normalize_identities, score_column,
-)
+from scipy.stats import ks_2samp, rankdata, spearmanr, wasserstein_distance
 
 
 # =========================================================
@@ -24,13 +15,68 @@ from paper_config import (
 PROJECT_ROOT = Path(__file__).resolve().parent
 RESULT_ROOT = PROJECT_ROOT / "result"
 OUTPUT_ROOT = RESULT_ROOT / "paper"
+DOMAINS = ("clipart", "infograph", "painting", "quickdraw", "real", "sketch")
+EXCLUDED_CLIPART = {14, 32, 79, 123, 465}
+N_SOURCES = 2995
+STRENGTHS = (0.02, 0.04)
+FEATURE_EXTRACTORS = (
+    "sd_vae", "resnet50", "convnext_tiny", "dinov2_vitb14",
+    "clip_vitl14_336", "vit_b16_384",
+)
+TRANSFORMATIONS = (
+    *(("jpeg_comp", value) for value in (95, 85, 75, 50)),
+    *(("gaussian_blur", value) for value in (0.5, 1.0, 2.0, 3.0)),
+    *(("downscaling", value) for value in (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)),
+)
+PROBE_COLUMNS = ["feature_extractor", "transformation", "transformation_factor"]
+IDENTITY_COLUMNS = ["domain", "data_index"]
+CONDITION_NAMES = {
+    "none": "clean", "clean": "clean", "NS_linf": "NS", "NS": "NS",
+    "GN_linf": "GN", "GN": "GN", "GN_star_linf": "GNstar",
+    "GN_lpips_matched_ns_linf": "GNstar", "GNstar": "GNstar",
+}
+AUXILIARY_METHODS = (
+    ("MIST", "honig", "Honig_MIST", 90),
+    ("Glaze", "honig", "Glaze", 90),
+    ("Anti-DreamBooth", "honig", "AntiDB", 90),
+    ("MetaCloak", "vggface2", "MetaCloak", 192),
+)
 PROBE_KEYS = ["strength", *PROBE_COLUMNS]
-SCORE_COLUMNS = [score_column(name, value) for name, value in TRANSFORMATIONS]
 BASELINE_METRICS = ("pixel_rmse", "pixel_mae", "lpips", "frequency_rmse", "tfi")
 RESPONSE_VARIABLES = (
     "delta_A", "delta_A_normalized", "delta_C", "delta_C_normalized",
     "delta_gamma", "delta_s2", "delta_s2_normalized",
 )
+
+
+def score_column(transformation: str, factor: float) -> str:
+    value = str(int(factor)) if transformation == "jpeg_comp" else str(float(factor))
+    return f"ld_{transformation}_{value}"
+
+
+SCORE_COLUMNS = [score_column(name, value) for name, value in TRANSFORMATIONS]
+
+
+def normalize_identities(data: pd.DataFrame) -> pd.DataFrame:
+    result = data.copy()
+    result["domain"] = result["domain"].astype(str)
+    result["data_index"] = pd.to_numeric(result["data_index"]).map(
+        lambda value: f"{int(value):04d}"
+    )
+    return result
+
+
+def exclude_black_sources(data: pd.DataFrame) -> pd.DataFrame:
+    result = normalize_identities(data)
+    excluded = result["domain"].eq("clipart") & pd.to_numeric(
+        result["data_index"]
+    ).isin(EXCLUDED_CLIPART)
+    return result.loc[~excluded].copy()
+
+
+def domainnet_sources(data: pd.DataFrame) -> pd.DataFrame:
+    result = exclude_black_sources(data)
+    return result.loc[result["domain"].isin(DOMAINS)].copy()
 
 
 def read_csv(path: Path, **kwargs) -> pd.DataFrame:
@@ -74,9 +120,6 @@ def describe(values) -> dict:
     return {
         "n": len(a), "mean": float(np.mean(a)),
         "std": float(np.std(a, ddof=1)), "median": float(np.median(a)),
-        "q05": float(np.quantile(a, 0.05)), "q25": float(np.quantile(a, 0.25)),
-        "q75": float(np.quantile(a, 0.75)), "q95": float(np.quantile(a, 0.95)),
-        "minimum": float(np.min(a)), "maximum": float(np.max(a)),
     }
 
 
@@ -85,7 +128,8 @@ def comparison(positive, negative) -> dict:
     b = finite(negative, "Reference scores")
     return {
         "median_shift": float(np.median(a) - np.median(b)),
-        "KS": float(ks_2samp(a, b).statistic), "AUROC": auroc(a, b),
+        "KS": float(ks_2samp(a, b).statistic),
+        "Wasserstein": float(wasserstein_distance(a, b)), "AUROC": auroc(a, b),
     }
 
 
@@ -117,7 +161,8 @@ def partial_spearman(x, y, control) -> float:
 
 
 def ordered(data: pd.DataFrame, context: str) -> pd.DataFrame:
-    assert_cohort(data, context)
+    if len(data) != N_SOURCES or data.duplicated(IDENTITY_COLUMNS).any():
+        raise ValueError(f"{context}: expected {N_SOURCES} distinct source rows.")
     return data.sort_values(IDENTITY_COLUMNS, kind="stable").reset_index(drop=True)
 
 
@@ -204,9 +249,13 @@ def evaluate_probes(wide: pd.DataFrame, output: Path) -> pd.DataFrame:
                 )
                 rows.append(row)
                 for name, values in scores.items():
+                    metrics = {
+                        metric: row[f"{metric}_{name}_clean"]
+                        for metric in ("median_shift", "KS", "Wasserstein", "AUROC")
+                    } if name != "clean" else {}
                     distributions.append(dict(
                         **probe, condition=name, **describe(values),
-                        median_shift=float(np.median(values) - np.median(x)),
+                        median_clean_tfi=float(np.median(x)), **metrics,
                     ))
     probes = pd.DataFrame(rows)
     save_csv(probes, output / "013_probe_metrics.csv")
@@ -222,7 +271,7 @@ def evaluate_probes(wide: pd.DataFrame, output: Path) -> pd.DataFrame:
     save_csv(probes[PROBE_KEYS + [
         "paired_NS_exceeds_GNstar", "AUROC_NS_GNstar",
     ]], output / "013_paired_ordering.csv")
-    counts, correlations, rankings, selection = [], [], [], []
+    counts, correlations, paired_summaries = [], [], []
     for strength, group in probes.groupby("strength", sort=True):
         for control in ("GN", "GNstar"):
             values = group[f"AUROC_NS_{control}"]
@@ -231,6 +280,7 @@ def evaluate_probes(wide: pd.DataFrame, output: Path) -> pd.DataFrame:
                 above_0_5=int(values.gt(0.5).sum()),
                 below_0_5=int(values.lt(0.5).sum()),
                 equal_0_5=int(values.eq(0.5).sum()),
+                positive_NS_median_shifts=int(group["median_shift_NS_clean"].gt(0).sum()),
                 reversed_and_clean_auroc_at_least_0_95=int(
                     (values.lt(0.5) & group["AUROC_NS_clean"].ge(0.95)).sum()
                 ),
@@ -242,21 +292,24 @@ def evaluate_probes(wide: pd.DataFrame, output: Path) -> pd.DataFrame:
                     group[variable], group["AUROC_NS_GNstar"],
                 ),
             ))
-        clean_top = group.sort_values("AUROC_NS_clean", ascending=False, kind="stable").head(3)
-        direct_top = group.sort_values("AUROC_NS_GNstar", ascending=False, kind="stable").head(3)
-        selection.append(dict(
-            strength=strength, top3_intersection=len(set(clean_top.index) & set(direct_top.index)),
+        reference = group.loc[
+            group["feature_extractor"].eq("sd_vae")
+            & group["transformation"].eq("jpeg_comp")
+            & group["transformation_factor"].eq(85)
+        ].iloc[0]
+        paired = group["paired_NS_exceeds_GNstar"]
+        direct = group["AUROC_NS_GNstar"]
+        paired_summaries.append(dict(
+            strength=strength, n_probes=len(group),
+            spearman_rho=spearman(paired, direct),
+            direction_agreement=int((np.sign(paired - 0.5) == np.sign(direct - 0.5)).sum()),
+            median_absolute_difference=float(np.median(np.abs(paired - direct))),
+            reference_paired=float(reference["paired_NS_exceeds_GNstar"]),
+            reference_auroc=float(reference["AUROC_NS_GNstar"]),
         ))
-        for objective in ("AUROC_NS_clean", "AUROC_NS_GN", "AUROC_NS_GNstar"):
-            ranking = group[PROBE_KEYS + [objective]].copy()
-            ranking["objective"] = objective
-            ranking["rank"] = ranking[objective].rank(method="min", ascending=False)
-            ranking = ranking.rename(columns={objective: "AUROC"})
-            rankings.append(ranking.sort_values("rank", kind="stable"))
     save_csv(pd.DataFrame(counts), output / "013_direct_order_counts.csv")
     save_csv(pd.DataFrame(correlations), output / "013_clean_direct_correlations.csv")
-    save_csv(pd.concat(rankings, ignore_index=True), output / "013_probe_rankings.csv")
-    save_csv(pd.DataFrame(selection), output / "013_top3_overlap.csv")
+    save_csv(pd.DataFrame(paired_summaries), output / "013_paired_ordering_summary.csv")
     return probes
 
 
@@ -355,7 +408,7 @@ def evaluate_responses(
             if found != expected_probes:
                 raise ValueError(f"Response {strength}/{condition}: incomplete probe grid.")
             for key, block in group.groupby(PROBE_COLUMNS, sort=False):
-                assert_cohort(block, f"Response {strength}/{condition}/{key}")
+                ordered(block, f"Response {strength}/{condition}/{key}")
             for name in ("A", "C", "gamma", "clean_tfi", "modified_tfi", "modified_s2"):
                 finite(group[name], f"Response {strength}/{condition}/{name}")
             if group["A"].lt(0).any() or group["gamma"].abs().gt(1.000001).any():
@@ -381,22 +434,6 @@ def evaluate_responses(
             ("gamma", "delta_gamma"), ("modified_s2", "delta_s2"),
         ):
             differences[name] = paired[f"{column}_NS"] - paired[f"{column}_GNstar"]
-        differences["delta_s2_from_components"] = (
-            differences["delta_A"] + differences["delta_C"]
-        )
-        scale = probes.loc[
-            probes["strength"].eq(strength),
-            PROBE_COLUMNS + ["median_squared_clean_tfi"],
-        ]
-        differences = differences.merge(scale, on=PROBE_COLUMNS, validate="many_to_one")
-        if differences["median_squared_clean_tfi"].le(0).any():
-            raise ValueError("Probe normalization requires a positive median clean squared score.")
-        for column in ("delta_A", "delta_C", "delta_s2"):
-            differences[f"{column}_normalized"] = (
-                differences[column] / differences["median_squared_clean_tfi"]
-            )
-        tag = f"{int(round(strength * 100)):03d}"
-        save_csv(differences, output / f"013_paired_differences_{tag}.csv.gz")
         median = differences.groupby(PROBE_COLUMNS, sort=False)[
             ["delta_A", "delta_C", "delta_gamma", "delta_s2"]
         ].median().reset_index()
@@ -538,7 +575,7 @@ def evaluate_magnitudes(path: Path, output: Path) -> None:
                 data["domain"].isin(DOMAINS) & data["condition"].eq(condition)
                 & data["strength"].eq(strength)
             ]
-            assert_cohort(selected, f"Perturbation magnitude/{condition}/{strength}")
+            ordered(selected, f"Perturbation magnitude/{condition}/{strength}")
             row = dict(strength=strength, condition=condition, n=len(selected))
             for metric in ("linf", "lpips"):
                 row.update({
@@ -597,7 +634,7 @@ def evaluate_benign(path: Path, wide: pd.DataFrame, output: Path) -> None:
     for (operation, factor), group in data.groupby(
         ["benign_transformation", "benign_factor"], sort=True,
     ):
-        assert_cohort(group, f"Benign/{operation}/{factor}")
+        ordered(group, f"Benign/{operation}/{factor}")
         clean_values = group["tfi_untouched_clean"]
         processed_values = group["tfi_processed_clean"]
         for strength in STRENGTHS:
@@ -618,14 +655,6 @@ def evaluate_benign(path: Path, wide: pd.DataFrame, output: Path) -> None:
     save_csv(pd.DataFrame(rows), output / "013_benign_metrics.csv")
 
 
-def fingerprint(path: Path) -> dict:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-    return {"path": str(path.resolve()), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tfi-csv", type=Path, default=RESULT_ROOT / "tfi" / "tfi.csv")
@@ -644,66 +673,19 @@ def main() -> None:
         default=RESULT_ROOT / "perturbation" / "perturbation_per_image.csv",
     )
     parser.add_argument("--output-root", type=Path, default=OUTPUT_ROOT)
-    parser.add_argument(
-        "--scores-only", action="store_true",
-        help="Only the 84-probe TFI evaluations; not a complete paper reproduction.",
-    )
     args = parser.parse_args()
     responses = args.responses or [
         RESULT_ROOT / "analysis" / "012_decomposition_per_sample.csv"
     ]
-    inputs = [args.tfi_csv]
-    if not args.scores_only:
-        inputs += [*responses, args.benign_csv, args.perturbation_csv]
-        inputs += [args.baseline_csv] if args.baseline_csv is not None else [
-            args.baseline_root / name for name in (
-                "008_baseline_rows.csv", "008_baseline_columns.csv",
-                "008_baseline_scores.float32.npy",
-            )
-        ]
-    for path in inputs:
-        if not path.is_file():
-            raise FileNotFoundError(f"Missing measurement input: {path}")
     args.output_root.mkdir(parents=True, exist_ok=True)
     raw, wide = load_tfi(args.tfi_csv)
     probes = evaluate_probes(wide, args.output_root)
     evaluate_domains(wide, args.output_root)
-    partial = None
-    if not args.scores_only:
-        evaluate_auxiliary(raw, args.output_root)
-        evaluate_baselines(load_baselines(args.baseline_csv, args.baseline_root), args.output_root)
-        _, partial = evaluate_responses(responses, probes, args.output_root)
-        evaluate_magnitudes(args.perturbation_csv, args.output_root)
-        evaluate_benign(args.benign_csv, wide, args.output_root)
-    manifest = {
-        "mode": "scores_only" if args.scores_only else "complete_paper_analysis",
-        "n_source_images": N_SOURCES, "n_probes_per_strength": 84,
-        "strengths": list(STRENGTHS), "inputs": [fingerprint(path) for path in inputs],
-        "definitions": {
-            "AUROC": "P(s_positive > s_negative) + 0.5 P(exact tie), all cross-distribution pairs",
-            "response_difference": "NS minus GNstar within the same source and probe, then median",
-            "normalization": "median of squared clean TFI for the same probe",
-            "partial_spearman": "average ranks; OLS with intercept; Pearson of residuals",
-            "scope": "fixed 2995-source DomainNet cohort; auxiliary cohorts evaluated separately",
-        },
-        "results": [
-            {
-                "strength": strength,
-                "positive_NS_median_shifts": int(
-                    probes.loc[probes["strength"].eq(strength), "median_shift_NS_clean"].gt(0).sum()
-                ),
-                "direct_NS_GNstar_below_0_5": int((
-                    probes["strength"].eq(strength) & probes["AUROC_NS_GNstar"].lt(0.5)
-                ).sum()),
-            } for strength in STRENGTHS
-        ],
-    }
-    if partial is not None:
-        manifest["partial_spearman"] = partial.to_dict(orient="records")
-    (args.output_root / "013_run_manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8",
-    )
-    print(json.dumps(manifest["results"], indent=2), flush=True)
+    evaluate_auxiliary(raw, args.output_root)
+    evaluate_baselines(load_baselines(args.baseline_csv, args.baseline_root), args.output_root)
+    evaluate_responses(responses, probes, args.output_root)
+    evaluate_magnitudes(args.perturbation_csv, args.output_root)
+    evaluate_benign(args.benign_csv, wide, args.output_root)
     print(f"Saved paper-analysis outputs: {args.output_root.resolve()}", flush=True)
 
 

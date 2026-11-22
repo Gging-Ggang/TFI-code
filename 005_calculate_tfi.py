@@ -7,8 +7,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from paper_config import AUXILIARY_DOMAINS
-
 
 # =========================================================
 # Hardcoded configuration
@@ -19,6 +17,10 @@ METADATA_PATH = FEATURE_ROOT / "feature_metadata.parquet"
 OUTPUT_ROOT = PROJECT_ROOT / "result" / "tfi"
 OUTPUT_CSV = OUTPUT_ROOT / "tfi.csv"
 OUTPUT_NPY = OUTPUT_ROOT / "tfi.float32.npy"
+AUXILIARY_DOMAINS = (
+    "D_Honig_original", "D_Honig_glaze", "D_Honig_mist", "D_Honig_antidb",
+    "D_metacloak_clean", "D_metacloak_protected",
+)
 
 FEATURE_EXTRACTORS = (
     "sd_vae",
@@ -64,10 +66,6 @@ CSV_METADATA_COLUMNS = [
     "poisoning_factor",
 ]
 LD_COLUMNS = [column for _, _, column in TRANSFORMATIONS]
-ANGLE_COLUMNS = [
-    column.replace("ld_", "angle_", 1)
-    for column in LD_COLUMNS
-]
 BATCH_SIZE = 256
 
 
@@ -253,13 +251,12 @@ def calculate_metrics(
     original_indices: np.ndarray,
     transformed_indices: dict[str, np.ndarray],
     extractor_name: str,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> np.ndarray:
     distances = np.full(
         (len(original_indices), len(TRANSFORMATIONS)),
         np.nan,
         dtype=np.float32,
     )
-    angles = np.full_like(distances, np.nan)
 
     for column_index, (_, _, output_column) in enumerate(TRANSFORMATIONS):
         target_indices = transformed_indices[output_column]
@@ -285,44 +282,6 @@ def calculate_metrics(
             )
             distances[selected_positions, column_index] = np.sqrt(squared_distance)
 
-            original_squared_norm = np.einsum(
-                "ij,ij->i",
-                original_batch,
-                original_batch,
-                dtype=np.float32,
-                optimize=True,
-            )
-            transformed_squared_norm = np.einsum(
-                "ij,ij->i",
-                transformed_batch,
-                transformed_batch,
-                dtype=np.float32,
-                optimize=True,
-            )
-            zero_norm = (original_squared_norm <= 0) | (
-                transformed_squared_norm <= 0
-            )
-            if zero_norm.any():
-                raise ValueError(
-                    f"Zero-norm feature vectors found for {extractor_name} "
-                    f"{output_column}: {int(zero_norm.sum())} rows"
-                )
-
-            dot_product = np.einsum(
-                "ij,ij->i",
-                original_batch,
-                transformed_batch,
-                dtype=np.float32,
-                optimize=True,
-            )
-            denominator = np.sqrt(
-                original_squared_norm * transformed_squared_norm
-            )
-            cosine_similarity = np.clip(dot_product / denominator, -1.0, 1.0)
-            angles[selected_positions, column_index] = np.degrees(
-                np.arccos(cosine_similarity)
-            )
-
         print(
             f"[{extractor_name}] {column_index + 1}/{len(TRANSFORMATIONS)} "
             f"{output_column}"
@@ -335,12 +294,7 @@ def calculate_metrics(
         np.isfinite(distances[~unmeasured])
     ):
         raise ValueError(f"Non-finite latent distances found for {extractor_name}")
-    if not np.array_equal(np.isnan(angles), unmeasured) or not np.all(
-        np.isfinite(angles[~unmeasured])
-    ):
-        raise ValueError(f"Non-finite latent angles found for {extractor_name}")
-
-    return distances, angles
+    return distances
 
 
 def result_metadata(
@@ -357,15 +311,10 @@ def result_metadata(
 def save_outputs(
     metadata_frames: list[pd.DataFrame],
     distance_arrays: list[np.ndarray],
-    angle_arrays: list[np.ndarray],
     existing_rows: int = 0,
 ) -> None:
     output_metadata = pd.concat(metadata_frames, ignore_index=True)
     output_distances = np.concatenate(distance_arrays, axis=0).astype(
-        np.float32,
-        copy=False,
-    )
-    output_angles = np.concatenate(angle_arrays, axis=0).astype(
         np.float32,
         copy=False,
     )
@@ -380,19 +329,9 @@ def save_outputs(
             f"Expected {len(LD_COLUMNS)} LD columns, "
             f"found {output_distances.shape[1]}"
         )
-    if output_angles.shape != output_distances.shape:
-        raise RuntimeError(
-            "Output LD/angle shape mismatch: "
-            f"{output_distances.shape} != {output_angles.shape}"
-        )
-
     output_dataframe = output_metadata.copy()
     output_dataframe[LD_COLUMNS] = output_distances
-    output_dataframe[ANGLE_COLUMNS] = output_angles
-    output_metrics = np.concatenate(
-        [output_distances, output_angles],
-        axis=1,
-    ).astype(np.float32, copy=False)
+    output_metrics = output_distances
 
     OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
     if existing_rows and OUTPUT_CSV.is_file() and OUTPUT_NPY.is_file():
@@ -440,7 +379,6 @@ def save_outputs(
 
     print(f"CSV rows: {len(output_dataframe)}")
     print(f"LD shape: {output_distances.shape}")
-    print(f"Angle shape: {output_angles.shape}")
     print(f"Combined NPY shape: {output_metrics.shape}")
     print(f"Combined NPY dtype: {output_metrics.dtype}")
     print(f"Saved CSV: {OUTPUT_CSV}")
@@ -464,7 +402,7 @@ def existing_result_keys() -> tuple[set[tuple[str, str, str, str, str]], int]:
         dtype={column: "string" for column in key_columns},
     )
     metrics = np.load(OUTPUT_NPY, mmap_mode="r", allow_pickle=False)
-    expected_columns = len(LD_COLUMNS) + len(ANGLE_COLUMNS)
+    expected_columns = len(LD_COLUMNS)
     if metrics.shape != (len(existing), expected_columns):
         raise ValueError(
             "Existing TFI CSV/NPY mismatch: "
@@ -490,7 +428,6 @@ def main() -> None:
 
     metadata_frames: list[pd.DataFrame] = []
     distance_arrays: list[np.ndarray] = []
-    angle_arrays: list[np.ndarray] = []
 
     print(f"Feature metadata rows: {len(metadata)}")
     print(f"Original rows per extractor: {len(originals)}")
@@ -508,6 +445,8 @@ def main() -> None:
             ],
             dtype=bool,
         )
+        if extractor_name != "sd_vae":
+            keep_mask &= ~originals["dataset_name"].isin(AUXILIARY_DOMAINS).to_numpy()
         if not keep_mask.any():
             print(f"[{extractor_name}] TFI rows already complete")
             continue
@@ -524,7 +463,7 @@ def main() -> None:
             require_exact=False,
         )
         features = load_feature_array(extractor_name, expected_rows=len(metadata))
-        distances, angles = calculate_metrics(
+        distances = calculate_metrics(
             features,
             selected_original_indices,
             selected_transformed_indices,
@@ -532,14 +471,13 @@ def main() -> None:
         )
         metadata_frames.append(selected_result_metadata)
         distance_arrays.append(distances)
-        angle_arrays.append(angles)
         del features
 
     if not metadata_frames:
         print("TFI outputs already contain all configured rows")
         return
 
-    save_outputs(metadata_frames, distance_arrays, angle_arrays, existing_rows=existing_rows)
+    save_outputs(metadata_frames, distance_arrays, existing_rows=existing_rows)
 
 
 if __name__ == "__main__":

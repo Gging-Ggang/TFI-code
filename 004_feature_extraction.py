@@ -13,10 +13,6 @@ import pandas as pd
 import torch
 from PIL import Image
 
-from paper_config import (
-    AUXILIARY_DOMAINS, DATASET_NAMES, DATASET_POISONING, DOMAINNET_DATASETS,
-)
-
 try:
     import pyarrow  # noqa: F401
 except ImportError as exc:
@@ -28,12 +24,33 @@ except ImportError as exc:
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = Path(os.environ.get("TFI_DATA_ROOT", PROJECT_ROOT / "data")).expanduser().resolve()
 RESULT_ROOT = PROJECT_ROOT / "result"
-CLEAN_DATASET = "D_domainnet_clean"
-NIGHTSHADE_DATASET = "D_domainnet_nightshade_linf_004"
-GAUSSIAN_DATASET = "D_domainnet_gaussian_linf_004"
-GAUSSIAN_LPIPS_DATASET = "D_domainnet_gaussian_lpips_matched_ns_linf_004"
 TRANSFORMATION_ROOT = DATA_ROOT / "Transformation"
 OUTPUT_ROOT = RESULT_ROOT / "features"
+
+DATASET_POISONING = {
+    "D_domainnet_clean": ("none", "none"),
+    "D_domainnet_nightshade_linf_002": ("NS_linf", "0.02"),
+    "D_domainnet_nightshade_linf_004": ("NS_linf", "0.04"),
+    "D_domainnet_gaussian_linf_002": ("GN_linf", "0.02"),
+    "D_domainnet_gaussian_linf_004": ("GN_linf", "0.04"),
+    "D_domainnet_gaussian_lpips_matched_ns_linf_002": ("GN_star_linf", "0.02"),
+    "D_domainnet_gaussian_lpips_matched_ns_linf_004": ("GN_star_linf", "0.04"),
+}
+DOMAINNET_DATASETS = tuple(DATASET_POISONING)
+AUXILIARY_DOMAINS = {
+    "D_Honig_original": "honig", "D_Honig_glaze": "honig",
+    "D_Honig_mist": "honig", "D_Honig_antidb": "honig",
+    "D_metacloak_clean": "vggface2", "D_metacloak_protected": "vggface2",
+}
+DATASET_POISONING.update({
+    "D_Honig_original": ("none", "none"),
+    "D_Honig_glaze": ("Glaze", "none"),
+    "D_Honig_mist": ("Honig_MIST", "none"),
+    "D_Honig_antidb": ("AntiDB", "none"),
+    "D_metacloak_clean": ("none", "none"),
+    "D_metacloak_protected": ("MetaCloak", "none"),
+})
+DATASET_NAMES = tuple(DATASET_POISONING)
 
 DOWNSCALE_FACTORS = (0.75, 0.6, 0.5, 0.4, 0.3, 0.25)
 GAUSSIAN_SIGMAS = (0.5, 1.0, 2.0, 3.0)
@@ -775,13 +792,20 @@ def extract_encoder_features(
         dtype=FEATURE_DTYPE,
         shape=(len(metadata), feature_dim),
     )
+    features[:] = np.nan
     if existing_features is not None:
         copy_existing_rows(existing_features, features, start_row)
 
+    row_ids = np.arange(start_row, len(metadata), dtype=np.int64)
+    if extractor_name != "sd_vae":
+        row_ids = row_ids[
+            ~metadata.iloc[row_ids]["dataset_name"].isin(AUXILIARY_DOMAINS).to_numpy()
+        ]
     with torch.inference_mode():
-        for start in range(start_row, len(metadata), BATCH_SIZE):
-            end = min(start + BATCH_SIZE, len(metadata))
-            batch = runtime.preprocess(image_paths[start:end]).to(
+        for start in range(0, len(row_ids), BATCH_SIZE):
+            end = min(start + BATCH_SIZE, len(row_ids))
+            selected_rows = row_ids[start:end]
+            batch = runtime.preprocess([image_paths[index] for index in selected_rows]).to(
                 DEVICE,
                 non_blocking=True,
             )
@@ -797,12 +821,12 @@ def extract_encoder_features(
                     f"found {tuple(batch_features.shape)}"
                 )
 
-            features[start:end] = (
+            features[selected_rows] = (
                 batch_features.detach().float().cpu().numpy().astype(FEATURE_DTYPE)
             )
 
-            if end % 500 < BATCH_SIZE or end == len(metadata):
-                print(f"[{extractor_name}] {end}/{len(metadata)} rows")
+            if end % 500 < BATCH_SIZE or end == len(row_ids):
+                print(f"[{extractor_name}] {end}/{len(row_ids)} rows")
 
     features.flush()
     del features
